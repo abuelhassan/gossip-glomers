@@ -12,6 +12,7 @@ import (
 
 func main() {
 	n := maelstrom.NewNode()
+	numChannel := make([]any, 0)
 
 	n.Handle("echo", func(msg maelstrom.Message) error {
 		body, err := readBody(msg)
@@ -32,6 +33,34 @@ func main() {
 		body["type"] = "generate_ok"
 		body["id"] = int64(rand.Int31()) + time.Now().UTC().UnixMicro()
 		return n.Reply(msg, body)
+	})
+
+	n.Handle("broadcast", func(msg maelstrom.Message) error {
+		body, err := readBody(msg)
+		if err != nil {
+			return err
+		}
+
+		numChannel = append(numChannel, body["message"].(float64))
+		body["type"] = "broadcast_ok"
+		delete(body, "message")
+		return n.Reply(msg, body)
+	})
+
+	n.Handle("read", func(msg maelstrom.Message) error {
+		body, err := readBody(msg)
+		if err != nil {
+			return err
+		}
+
+		body["type"] = "read_ok"
+		body["messages"] = numChannel
+		delete(body, "message")
+		return n.Reply(msg, body)
+	})
+
+	n.Handle("topology", func(msg maelstrom.Message) error {
+		return n.Reply(msg, map[string]any{"type": "topology_ok"})
 	})
 
 	if err := n.Run(); err != nil {
