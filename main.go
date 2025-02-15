@@ -14,8 +14,8 @@ func main() {
 	n := maelstrom.NewNode()
 
 	n.Handle("echo", func(msg maelstrom.Message) error {
-		var body map[string]any
-		if err := json.Unmarshal(msg.Body, &body); err != nil {
+		body, err := readBody(msg)
+		if err != nil {
 			return err
 		}
 
@@ -24,20 +24,26 @@ func main() {
 	})
 
 	n.Handle("generate", func(msg maelstrom.Message) error {
-		var body map[string]any
-		if err := json.Unmarshal(msg.Body, &body); err != nil {
+		body, err := readBody(msg)
+		if err != nil {
 			return err
 		}
 
 		body["type"] = "generate_ok"
-		return n.Reply(msg, map[string]any{
-			"type": "generate_ok",
-			"id":   time.Now().UnixNano() + int64(rand.Uint32()),
-		})
+		body["id"] = time.Now().UnixNano() + int64(rand.Uint32())
+		return n.Reply(msg, body)
 	})
 
 	if err := n.Run(); err != nil {
 		log.Printf("err: %s", err)
 		os.Exit(1)
 	}
+}
+
+func readBody(msg maelstrom.Message) (map[string]any, error) {
+	var body map[string]any
+	if err := json.Unmarshal(msg.Body, &body); err != nil {
+		return nil, err
+	}
+	return body, nil
 }
