@@ -30,7 +30,7 @@ func main() {
 		}
 
 		body["type"] = "generate_ok"
-		body["id"] = time.Now().UnixNano() + int64(rand.Uint32())
+		body["id"] = int64(rand.Int31()) + time.Now().UTC().UnixMicro()
 		return n.Reply(msg, body)
 	})
 
