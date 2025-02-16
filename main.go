@@ -12,7 +12,7 @@ import (
 
 func main() {
 	n := maelstrom.NewNode()
-	numChannel := make([]any, 0)
+	messages := make([]any, 0)
 
 	n.Handle("echo", func(msg maelstrom.Message) error {
 		body, err := readBody(msg)
@@ -41,7 +41,7 @@ func main() {
 			return err
 		}
 
-		numChannel = append(numChannel, body["message"].(float64))
+		messages = append(messages, body["message"].(float64))
 		body["type"] = "broadcast_ok"
 		delete(body, "message")
 		return n.Reply(msg, body)
@@ -54,7 +54,7 @@ func main() {
 		}
 
 		body["type"] = "read_ok"
-		body["messages"] = numChannel
+		body["messages"] = messages
 		delete(body, "message")
 		return n.Reply(msg, body)
 	})
