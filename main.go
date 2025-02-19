@@ -11,88 +11,97 @@ import (
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
-type app struct {
-	mu           sync.Mutex
-	messages     []any
-	uniqueFloats map[float64]struct{}
+type server struct {
+	n *maelstrom.Node
+
+	bcastMu   sync.Mutex
+	bcastVals []any
+	bcastMp   map[float64]struct{}
+}
+
+func (s *server) echoHandler(msg maelstrom.Message) error {
+	body, err := readBody(msg)
+	if err != nil {
+		return err
+	}
+
+	body["type"] = "echo_ok"
+	return s.n.Reply(msg, body)
+}
+
+func (s *server) generateHandler(msg maelstrom.Message) error {
+	body, err := readBody(msg)
+	if err != nil {
+		return err
+	}
+
+	body["type"] = "generate_ok"
+	body["id"] = int64(rand.Int31()) + time.Now().UTC().UnixMicro()
+	return s.n.Reply(msg, body)
+}
+
+func (s *server) readHandler(msg maelstrom.Message) error {
+	body, err := readBody(msg)
+	if err != nil {
+		return err
+	}
+
+	body["type"] = "read_ok"
+	body["messages"] = s.bcastVals
+	delete(body, "message")
+	return s.n.Reply(msg, body)
+}
+
+func (s *server) broadcastHandler(msg maelstrom.Message) error {
+	body, err := readBody(msg)
+	if err != nil {
+		return err
+	}
+
+	val := body["message"].(float64)
+	if _, ok := s.bcastMp[val]; !ok {
+		s.bcastMu.Lock()
+		s.bcastVals = append(s.bcastVals, val)
+		s.bcastMp[val] = struct{}{}
+		s.bcastMu.Unlock()
+		for _, dest := range s.n.NodeIDs() {
+			if dest == s.n.ID() || dest == msg.Src {
+				continue
+			}
+			// broadcast in the background
+			go s.broadcast(dest, msg.Body)
+		}
+	}
+
+	body["type"] = "broadcast_ok"
+	delete(body, "message")
+
+	return s.n.Reply(msg, body)
+}
+
+func (s *server) broadcast(dest string, body json.RawMessage) {
+	for {
+		ch := make(chan struct{})
+		_ = s.n.RPC(dest, body, func(msg maelstrom.Message) error {
+			ch <- struct{}{}
+			return nil
+		})
+		select {
+		case <-ch:
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 func main() {
 	n := maelstrom.NewNode()
-	msgs := app{mu: sync.Mutex{}, messages: []any{}, uniqueFloats: map[float64]struct{}{}}
+	srv := server{n: n, bcastMu: sync.Mutex{}, bcastVals: []any{}, bcastMp: map[float64]struct{}{}}
 
-	n.Handle("echo", func(msg maelstrom.Message) error {
-		body, err := readBody(msg)
-		if err != nil {
-			return err
-		}
-
-		body["type"] = "echo_ok"
-		return n.Reply(msg, body)
-	})
-
-	n.Handle("generate", func(msg maelstrom.Message) error {
-		body, err := readBody(msg)
-		if err != nil {
-			return err
-		}
-
-		body["type"] = "generate_ok"
-		body["id"] = int64(rand.Int31()) + time.Now().UTC().UnixMicro()
-		return n.Reply(msg, body)
-	})
-
-	n.Handle("broadcast", func(msg maelstrom.Message) error {
-		body, err := readBody(msg)
-		if err != nil {
-			return err
-		}
-
-		val := body["message"].(float64)
-		if _, ok := msgs.uniqueFloats[val]; !ok {
-			msgs.mu.Lock()
-			msgs.messages = append(msgs.messages, val)
-			msgs.uniqueFloats[val] = struct{}{}
-			msgs.mu.Unlock()
-			for _, dest := range n.NodeIDs() {
-				if dest == n.ID() || dest == msg.Src {
-					continue
-				}
-				// broadcast in the background
-				go func() {
-					for {
-						ch := make(chan struct{})
-						_ = n.RPC(dest, msg.Body, func(msg maelstrom.Message) error {
-							ch <- struct{}{}
-							return nil
-						})
-						select {
-						case <-ch:
-							return
-						case <-time.After(200 * time.Millisecond):
-						}
-					}
-				}()
-			}
-		}
-		body["type"] = "broadcast_ok"
-		delete(body, "message")
-
-		return n.Reply(msg, body)
-	})
-
-	n.Handle("read", func(msg maelstrom.Message) error {
-		body, err := readBody(msg)
-		if err != nil {
-			return err
-		}
-
-		body["type"] = "read_ok"
-		body["messages"] = msgs.messages
-		delete(body, "message")
-		return n.Reply(msg, body)
-	})
-
+	n.Handle("echo", srv.echoHandler)
+	n.Handle("generate", srv.generateHandler)
+	n.Handle("broadcast", srv.broadcastHandler)
+	n.Handle("read", srv.readHandler)
 	n.Handle("topology", func(msg maelstrom.Message) error {
 		return n.Reply(msg, map[string]any{"type": "topology_ok"})
 	})
