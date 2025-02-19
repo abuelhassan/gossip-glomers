@@ -52,6 +52,10 @@ func (s *server) readHandler(msg maelstrom.Message) error {
 	return s.n.Reply(msg, body)
 }
 
+func (s *server) topologyHandler(msg maelstrom.Message) error {
+	return s.n.Reply(msg, map[string]any{"type": "topology_ok"})
+}
+
 func (s *server) broadcastHandler(msg maelstrom.Message) error {
 	body, err := readBody(msg)
 	if err != nil {
@@ -64,7 +68,12 @@ func (s *server) broadcastHandler(msg maelstrom.Message) error {
 		s.bcastVals = append(s.bcastVals, val)
 		s.bcastMp[val] = struct{}{}
 		s.bcastMu.Unlock()
-		for _, dest := range s.n.NodeIDs() {
+
+		children := []string{"n0"}
+		if s.n.ID() == "n0" {
+			children = s.n.NodeIDs()
+		}
+		for _, dest := range children {
 			if dest == s.n.ID() || dest == msg.Src {
 				continue
 			}
@@ -82,14 +91,17 @@ func (s *server) broadcastHandler(msg maelstrom.Message) error {
 func (s *server) broadcast(dest string, body json.RawMessage) {
 	for {
 		ch := make(chan struct{})
-		_ = s.n.RPC(dest, body, func(msg maelstrom.Message) error {
+		err := s.n.RPC(dest, body, func(msg maelstrom.Message) error {
 			ch <- struct{}{}
 			return nil
 		})
+		if err != nil {
+			panic(err)
+		}
 		select {
 		case <-ch:
 			return
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(200 * time.Millisecond):
 		}
 	}
 }
@@ -102,9 +114,7 @@ func main() {
 	n.Handle("generate", srv.generateHandler)
 	n.Handle("broadcast", srv.broadcastHandler)
 	n.Handle("read", srv.readHandler)
-	n.Handle("topology", func(msg maelstrom.Message) error {
-		return n.Reply(msg, map[string]any{"type": "topology_ok"})
-	})
+	n.Handle("topology", srv.topologyHandler)
 
 	if err := n.Run(); err != nil {
 		log.Printf("err: %s", err)
