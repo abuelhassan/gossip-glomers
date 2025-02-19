@@ -49,11 +49,11 @@ func main() {
 		}
 
 		val := body["message"].(float64)
-		msgs.mu.Lock()
-		defer msgs.mu.Unlock()
 		if _, ok := msgs.uniqueFloats[val]; !ok {
+			msgs.mu.Lock()
 			msgs.messages = append(msgs.messages, val)
 			msgs.uniqueFloats[val] = struct{}{}
+			msgs.mu.Unlock()
 			for _, dest := range n.NodeIDs() {
 				if dest == n.ID() || dest == msg.Src {
 					continue
