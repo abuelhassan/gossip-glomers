@@ -60,7 +60,18 @@ func main() {
 				}
 				// broadcast in the background
 				go func() {
-					_ = n.Send(dest, msg.Body)
+					for {
+						ch := make(chan struct{})
+						_ = n.RPC(dest, msg.Body, func(msg maelstrom.Message) error {
+							ch <- struct{}{}
+							return nil
+						})
+						select {
+						case <-ch:
+							return
+						case <-time.After(200 * time.Millisecond):
+						}
+					}
 				}()
 			}
 		}
