@@ -12,12 +12,15 @@ import (
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
-type server struct {
-	n *maelstrom.Node
+type broadcast struct {
+	mu   sync.Mutex
+	vals []any
+	mp   map[float64]struct{}
+}
 
-	bcastMu   sync.Mutex
-	bcastVals []any
-	bcastMp   map[float64]struct{}
+type server struct {
+	n     *maelstrom.Node
+	bcast broadcast
 }
 
 func (s *server) echoHandler(msg maelstrom.Message) error {
@@ -48,7 +51,7 @@ func (s *server) readHandler(msg maelstrom.Message) error {
 	}
 
 	body["type"] = "read_ok"
-	body["messages"] = s.bcastVals
+	body["messages"] = s.bcast.vals
 	delete(body, "message")
 	return s.n.Reply(msg, body)
 }
@@ -65,10 +68,10 @@ func (s *server) broadcastHandler(msg maelstrom.Message) error {
 	}
 
 	val := body["message"].(float64)
-	s.bcastMu.Lock()
-	if _, ok := s.bcastMp[val]; !ok {
-		s.bcastVals = append(s.bcastVals, val)
-		s.bcastMp[val] = struct{}{}
+	s.bcast.mu.Lock()
+	if _, ok := s.bcast.mp[val]; !ok {
+		s.bcast.vals = append(s.bcast.vals, val)
+		s.bcast.mp[val] = struct{}{}
 		children := []string{"n0"}
 		if s.n.ID() == "n0" {
 			children = s.n.NodeIDs()
@@ -80,7 +83,7 @@ func (s *server) broadcastHandler(msg maelstrom.Message) error {
 			go s.broadcast(dest, msg.Body)
 		}
 	}
-	s.bcastMu.Unlock()
+	s.bcast.mu.Unlock()
 
 	body["type"] = "broadcast_ok"
 	delete(body, "message")
@@ -101,7 +104,7 @@ func (s *server) broadcast(dest string, body json.RawMessage) {
 
 func main() {
 	n := maelstrom.NewNode()
-	srv := server{n: n, bcastMu: sync.Mutex{}, bcastVals: []any{}, bcastMp: map[float64]struct{}{}}
+	srv := server{n: n, bcast: broadcast{mu: sync.Mutex{}, vals: []any{}, mp: map[float64]struct{}{}}}
 
 	n.Handle("echo", srv.echoHandler)
 	n.Handle("generate", srv.generateHandler)
