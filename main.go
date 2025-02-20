@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"math/rand"
@@ -77,7 +78,6 @@ func (s *server) broadcastHandler(msg maelstrom.Message) error {
 			if dest == s.n.ID() || dest == msg.Src {
 				continue
 			}
-			// broadcast in the background
 			go s.broadcast(dest, msg.Body)
 		}
 	}
@@ -90,18 +90,11 @@ func (s *server) broadcastHandler(msg maelstrom.Message) error {
 
 func (s *server) broadcast(dest string, body json.RawMessage) {
 	for {
-		ch := make(chan struct{})
-		err := s.n.RPC(dest, body, func(msg maelstrom.Message) error {
-			ch <- struct{}{}
-			return nil
-		})
-		if err != nil {
-			panic(err)
-		}
-		select {
-		case <-ch:
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_, err := s.n.SyncRPC(ctx, dest, body)
+		cancel()
+		if err == nil {
 			return
-		case <-time.After(200 * time.Millisecond):
 		}
 	}
 }
