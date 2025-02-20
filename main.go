@@ -54,6 +54,7 @@ func (s *server) readHandler(msg maelstrom.Message) error {
 }
 
 func (s *server) topologyHandler(msg maelstrom.Message) error {
+	// ignoring and just using a flat tree topology.
 	return s.n.Reply(msg, map[string]any{"type": "topology_ok"})
 }
 
@@ -64,12 +65,10 @@ func (s *server) broadcastHandler(msg maelstrom.Message) error {
 	}
 
 	val := body["message"].(float64)
+	s.bcastMu.Lock()
 	if _, ok := s.bcastMp[val]; !ok {
-		s.bcastMu.Lock()
 		s.bcastVals = append(s.bcastVals, val)
 		s.bcastMp[val] = struct{}{}
-		s.bcastMu.Unlock()
-
 		children := []string{"n0"}
 		if s.n.ID() == "n0" {
 			children = s.n.NodeIDs()
@@ -81,6 +80,7 @@ func (s *server) broadcastHandler(msg maelstrom.Message) error {
 			go s.broadcast(dest, msg.Body)
 		}
 	}
+	s.bcastMu.Unlock()
 
 	body["type"] = "broadcast_ok"
 	delete(body, "message")

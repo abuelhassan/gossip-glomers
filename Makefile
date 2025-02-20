@@ -27,3 +27,8 @@ run-broadcast-c:
 	go build -o $(EXECUTABLE_NAME)
 	cd -P $(MAELSTROM_PATH); ./maelstrom test -w broadcast --bin $(PROJECT_PATH)/$(EXECUTABLE_NAME) --node-count 5 --time-limit 20 --rate 10 --nemesis partition
 	rm -f $(EXECUTABLE_NAME)
+
+run-broadcast-d:
+	go build -o $(EXECUTABLE_NAME)
+	cd -P $(MAELSTROM_PATH); ./maelstrom test -w broadcast --bin $(PROJECT_PATH)/$(EXECUTABLE_NAME) --node-count 25 --time-limit 20 --rate 100 --latency 100
+	rm -f $(EXECUTABLE_NAME)
