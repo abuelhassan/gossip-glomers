@@ -14,16 +14,30 @@ import (
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
+const (
+	typeEcho      = "echo"
+	typeGenerate  = "generate"
+	typeBroadcast = "broadcast"
+	typeCounter   = "counter"
+)
+
+var AppType string
+
 type broadcast struct {
 	mu   sync.Mutex
 	vals []any
 	mp   map[float64]struct{}
 }
 
+type counter struct {
+	val int
+}
+
 type server struct {
 	n       *maelstrom.Node
 	bcast   broadcast
 	batcher batcher.Batcher[any]
+	counter counter
 }
 
 func (s *server) echoHandler(msg maelstrom.Message) error {
@@ -47,7 +61,7 @@ func (s *server) generateHandler(msg maelstrom.Message) error {
 	return s.n.Reply(msg, body)
 }
 
-func (s *server) readHandler(msg maelstrom.Message) error {
+func (s *server) broadcastReadHandler(msg maelstrom.Message) error {
 	body, err := readBody(msg)
 	if err != nil {
 		return err
@@ -59,7 +73,7 @@ func (s *server) readHandler(msg maelstrom.Message) error {
 	return s.n.Reply(msg, body)
 }
 
-func (s *server) topologyHandler(msg maelstrom.Message) error {
+func (s *server) broadcastTopologyHandler(msg maelstrom.Message) error {
 	// ignoring and just using a flat tree topology.
 	return s.n.Reply(msg, map[string]any{"type": "topology_ok"})
 }
@@ -125,17 +139,22 @@ func (s *server) broadcast(vals []any) {
 
 func main() {
 	const bcastBatchingLimit = 50
-	const bcastBatchingDuration = 800 * time.Millisecond
+	const bcastBatchingDuration = 450 * time.Millisecond
 
 	n := maelstrom.NewNode()
 	srv := server{n: n, bcast: broadcast{mu: sync.Mutex{}, vals: []any{}, mp: map[float64]struct{}{}}}
 	srv.batcher = batcher.New[any](context.Background(), bcastBatchingLimit, bcastBatchingDuration, srv.broadcast)
 
-	n.Handle("echo", srv.echoHandler)
-	n.Handle("generate", srv.generateHandler)
-	n.Handle("broadcast", srv.broadcastHandler)
-	n.Handle("read", srv.readHandler)
-	n.Handle("topology", srv.topologyHandler)
+	switch AppType {
+	case typeEcho:
+		n.Handle("echo", srv.echoHandler)
+	case typeGenerate:
+		n.Handle("generate", srv.generateHandler)
+	case typeBroadcast:
+		n.Handle("broadcast", srv.broadcastHandler)
+		n.Handle("topology", srv.broadcastTopologyHandler)
+		n.Handle("read", srv.broadcastReadHandler)
+	}
 
 	if err := n.Run(); err != nil {
 		log.Printf("err: %s", err)
