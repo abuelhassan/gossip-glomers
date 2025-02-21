@@ -37,3 +37,8 @@ run-broadcast-e:
 	go build -o $(EXECUTABLE_NAME) -ldflags "-X main.AppType=broadcast"
 	cd -P $(MAELSTROM_PATH); ./maelstrom test -w broadcast --bin $(PROJECT_PATH)/$(EXECUTABLE_NAME) --node-count 25 --time-limit 20 --rate 100 --latency 100
 	rm -f $(EXECUTABLE_NAME)
+
+run-counter:
+	go build -o $(EXECUTABLE_NAME) -ldflags "-X main.AppType=counter"
+	cd -P $(MAELSTROM_PATH); ./maelstrom test -w g-counter --bin $(PROJECT_PATH)/$(EXECUTABLE_NAME) --node-count 3 --rate 100 --time-limit 20 --nemesis partition
+	rm -f $(EXECUTABLE_NAME)

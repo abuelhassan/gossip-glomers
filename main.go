@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/abuelhassan/gossip-glomers/batcher"
@@ -30,7 +31,7 @@ type broadcast struct {
 }
 
 type counter struct {
-	val int
+	val atomic.Int64
 }
 
 type server struct {
@@ -40,6 +41,7 @@ type server struct {
 	counter counter
 }
 
+// Echo Challenge
 func (s *server) echoHandler(msg maelstrom.Message) error {
 	body, err := readBody(msg)
 	if err != nil {
@@ -50,6 +52,7 @@ func (s *server) echoHandler(msg maelstrom.Message) error {
 	return s.n.Reply(msg, body)
 }
 
+// Unique ID Challenge
 func (s *server) generateHandler(msg maelstrom.Message) error {
 	body, err := readBody(msg)
 	if err != nil {
@@ -61,6 +64,7 @@ func (s *server) generateHandler(msg maelstrom.Message) error {
 	return s.n.Reply(msg, body)
 }
 
+// Broadcast Challenge
 func (s *server) broadcastReadHandler(msg maelstrom.Message) error {
 	body, err := readBody(msg)
 	if err != nil {
@@ -137,12 +141,66 @@ func (s *server) broadcast(vals []any) {
 	}
 }
 
+// Grow-Only Counter Challenge
+func (s *server) counterAddHandler(msg maelstrom.Message) error {
+	body, err := readBody(msg)
+	if err != nil {
+		return err
+	}
+
+	s.counter.val.Add(int64(body["delta"].(float64)))
+	return s.n.Reply(msg, map[string]any{
+		"type": "add_ok",
+	})
+}
+
+func (s *server) counterReadHandler(msg maelstrom.Message) error {
+	sum := atomic.Int64{}
+	wg := sync.WaitGroup{}
+	for _, dest := range s.n.NodeIDs() {
+		if dest == s.n.ID() {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			resp, err := s.n.SyncRPC(ctx, dest, map[string]any{
+				"type": "readown",
+			})
+			cancel()
+			if err != nil {
+				return // Assume 0 - Can do retry or Cache locally instead
+			}
+			body, err := readBody(resp)
+			if err != nil {
+				panic(err)
+			}
+			sum.Add(int64(body["value"].(float64)))
+			return
+		}()
+	}
+	wg.Wait()
+	sum.Add(s.counter.val.Load())
+	return s.n.Reply(msg, map[string]any{
+		"type":  "read_ok",
+		"value": sum.Load(),
+	})
+}
+
+func (s *server) counterReadOwnHandler(msg maelstrom.Message) error {
+	return s.n.Reply(msg, map[string]any{
+		"type":  "readown_ok",
+		"value": s.counter.val.Load(),
+	})
+}
+
 func main() {
 	const bcastBatchingLimit = 50
 	const bcastBatchingDuration = 450 * time.Millisecond
 
 	n := maelstrom.NewNode()
-	srv := server{n: n, bcast: broadcast{mu: sync.Mutex{}, vals: []any{}, mp: map[float64]struct{}{}}}
+	srv := server{n: n, bcast: broadcast{mu: sync.Mutex{}, vals: []any{}, mp: map[float64]struct{}{}}, counter: counter{val: atomic.Int64{}}}
 	srv.batcher = batcher.New[any](context.Background(), bcastBatchingLimit, bcastBatchingDuration, srv.broadcast)
 
 	switch AppType {
@@ -154,6 +212,10 @@ func main() {
 		n.Handle("broadcast", srv.broadcastHandler)
 		n.Handle("topology", srv.broadcastTopologyHandler)
 		n.Handle("read", srv.broadcastReadHandler)
+	case typeCounter:
+		n.Handle("add", srv.counterAddHandler)
+		n.Handle("read", srv.counterReadHandler)
+		n.Handle("readown", srv.counterReadOwnHandler)
 	}
 
 	if err := n.Run(); err != nil {
