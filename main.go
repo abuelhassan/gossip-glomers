@@ -153,7 +153,7 @@ func (s *server) counterReadHandler(msg maelstrom.Message) error {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 			resp, err := s.n.SyncRPC(ctx, dest, map[string]any{
-				"type": "readown",
+				"type": "read_own",
 			})
 			cancel()
 			if err != nil {
@@ -177,7 +177,7 @@ func (s *server) counterReadHandler(msg maelstrom.Message) error {
 
 func (s *server) counterReadOwnHandler(msg maelstrom.Message) error {
 	return s.n.Reply(msg, map[string]any{
-		"type":  "readown_ok",
+		"type":  "read_own_ok",
 		"value": s.counter.val.Load(),
 	})
 }
@@ -202,7 +202,7 @@ func main() {
 	case typeCounter:
 		n.Handle("add", srv.counterAddHandler)
 		n.Handle("read", srv.counterReadHandler)
-		n.Handle("readown", srv.counterReadOwnHandler)
+		n.Handle("read_own", srv.counterReadOwnHandler)
 	}
 
 	if err := n.Run(); err != nil {

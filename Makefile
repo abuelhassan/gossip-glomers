@@ -1,4 +1,4 @@
-.PHONY: run-echo run-unique-id run-broadcast-a run-broadcast-b run-broadcast-c run-broadcast-d run-broadcast-e
+.PHONY: run-echo run-unique-id run-broadcast-a run-broadcast-b run-broadcast-c run-broadcast-d run-broadcast-e run-counter
 
 EXECUTABLE_NAME = out
 PROJECT_PATH = $(GOPATH)/src/github.com/abuelhassan/gossip-glomers
