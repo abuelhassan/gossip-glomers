@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"math/rand"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/abuelhassan/gossip-glomers/batcher"
@@ -22,6 +22,10 @@ const (
 	typeCounter   = "counter"
 )
 
+const (
+	counterSumKey = "SUM"
+)
+
 var AppType string
 
 type broadcast struct {
@@ -30,15 +34,11 @@ type broadcast struct {
 	mp   map[float64]struct{}
 }
 
-type counter struct {
-	val atomic.Int64
-}
-
 type server struct {
-	n       *maelstrom.Node
-	bcast   broadcast
-	batcher batcher.Batcher[any]
-	counter counter
+	n            *maelstrom.Node
+	bcast        broadcast
+	bcastBatcher batcher.Batcher[any]
+	cntrKV       *maelstrom.KV
 }
 
 // Echo Challenge
@@ -94,7 +94,7 @@ func (s *server) broadcastHandler(msg maelstrom.Message) error {
 		}
 		s.bcast.vals = append(s.bcast.vals, val)
 		s.bcast.mp[val] = struct{}{}
-		s.batcher.Add(val)
+		s.bcastBatcher.Add(val)
 	}
 	s.bcast.mu.Unlock()
 
@@ -134,51 +134,55 @@ func (s *server) counterAddHandler(msg maelstrom.Message) error {
 	if err != nil {
 		return err
 	}
+	delta := int(body["delta"].(float64))
 
-	s.counter.val.Add(int64(body["delta"].(float64)))
+	func() {
+		for {
+			var curSum int
+			for {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				val, err := s.cntrKV.Read(ctx, counterSumKey)
+				cancel()
+				if err == nil {
+					curSum = val.(int)
+					break
+				}
+				var rpc *maelstrom.RPCError
+				if errors.As(err, &rpc) && rpc.Code == maelstrom.KeyDoesNotExist {
+					curSum = 0
+					break
+				}
+			}
+			for {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				err := s.cntrKV.CompareAndSwap(ctx, counterSumKey, curSum, curSum+delta, true)
+				cancel()
+				if err == nil {
+					return
+				}
+				var rpc *maelstrom.RPCError
+				if errors.As(err, &rpc) && rpc.Code == maelstrom.PreconditionFailed {
+					// Value got updated from elsewhere. Send it back to retry reading then writing the updated value.
+					break
+				}
+			}
+		}
+	}()
+
 	return s.n.Reply(msg, map[string]any{
 		"type": "add_ok",
 	})
 }
 
 func (s *server) counterReadHandler(msg maelstrom.Message) error {
-	sum := atomic.Int64{}
-	wg := sync.WaitGroup{}
-	for _, dest := range s.n.NodeIDs() {
-		if dest == s.n.ID() {
-			continue
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-			resp, err := s.n.SyncRPC(ctx, dest, map[string]any{
-				"type": "read_own",
-			})
-			cancel()
-			if err != nil {
-				return // Assume 0 - Can do retry or Cache locally instead
-			}
-			body, err := readBody(resp)
-			if err != nil {
-				panic(err)
-			}
-			sum.Add(int64(body["value"].(float64)))
-			return
-		}()
-	}
-	wg.Wait()
-	sum.Add(s.counter.val.Load())
+	sum := 0
+	time.Sleep(10 * time.Millisecond) // Hacky!
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	_ = s.cntrKV.ReadInto(ctx, counterSumKey, &sum)
+	cancel()
 	return s.n.Reply(msg, map[string]any{
 		"type":  "read_ok",
-		"value": sum.Load(),
-	})
-}
-
-func (s *server) counterReadOwnHandler(msg maelstrom.Message) error {
-	return s.n.Reply(msg, map[string]any{
-		"type":  "read_own_ok",
-		"value": s.counter.val.Load(),
+		"value": sum,
 	})
 }
 
@@ -187,8 +191,8 @@ func main() {
 	const bcastBatchingDuration = 450 * time.Millisecond
 
 	n := maelstrom.NewNode()
-	srv := server{n: n, bcast: broadcast{mu: sync.Mutex{}, vals: []any{}, mp: map[float64]struct{}{}}, counter: counter{val: atomic.Int64{}}}
-	srv.batcher = batcher.New[any](context.Background(), bcastBatchingLimit, bcastBatchingDuration, srv.broadcast)
+	srv := server{n: n, bcast: broadcast{mu: sync.Mutex{}, vals: []any{}, mp: map[float64]struct{}{}}, cntrKV: maelstrom.NewSeqKV(n)}
+	srv.bcastBatcher = batcher.New[any](context.Background(), bcastBatchingLimit, bcastBatchingDuration, srv.broadcast)
 
 	switch AppType {
 	case typeEcho:
@@ -202,7 +206,6 @@ func main() {
 	case typeCounter:
 		n.Handle("add", srv.counterAddHandler)
 		n.Handle("read", srv.counterReadHandler)
-		n.Handle("read_own", srv.counterReadOwnHandler)
 	}
 
 	if err := n.Run(); err != nil {

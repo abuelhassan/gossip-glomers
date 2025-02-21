@@ -21,15 +21,19 @@ Batching messages is used for the last challenge. Instead of broadcasting each m
 is awaited to be sent together. In case the size of messages is not met during a configured duration, the current batch
 is sent anyway, regardless of its size.
 
-The broadcast handler expects two different types of messages. One with the key "message" that maelstrom sends. And 
+The broadcast handler expects two different types of messages. One with the key "message" that maelstrom sends. And
 another with key "messages" that nodes use to communicate together.
-It could have been better to just introduce a separate handler for internal communication.
 
 # Grow-Only Counter
-Went for the simplest solution of just reading the local sum of all nodes with every "read" command.
+The KV store provided by maelstrom, creates a separate node that works as a KV store.
 
-For the challenge of network partitions, I have considered two options
-* Retry on failure -> Consistency
-* Cache the local results locally and use the cache on failures -> Availability
+I utilized the KV store. And used the CompareAndSwap function to assure the correctness of the sum.
+ 
+1. Read sum from KV (curSum)
+2. CompareAndSwap(curSum, curSum+delta)
 
-But I went with an easier solution of just ignoring the failures, and it was good enough for the challenge.
+If the second step returned the error PreconditionFailed, that means the value was updated between the two steps,
+in which case I just retry starting from step 1.
+
+Note: I had to leave a sleep with a small duration (10ms) in the read handler before reading the KV store, 
+to make sure the final READ ops are all up-to-date.
