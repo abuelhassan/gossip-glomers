@@ -54,27 +54,18 @@ func (s *server) echoHandler(msg maelstrom.Message) error {
 
 // Unique ID Challenge
 func (s *server) generateHandler(msg maelstrom.Message) error {
-	body, err := readBody(msg)
-	if err != nil {
-		return err
-	}
-
-	body["type"] = "generate_ok"
-	body["id"] = int64(rand.Int31()) + time.Now().UTC().UnixMicro()
-	return s.n.Reply(msg, body)
+	return s.n.Reply(msg, map[string]any{
+		"type": "generate_ok",
+		"id":   int64(rand.Int31()) + time.Now().UTC().UnixMicro(),
+	})
 }
 
 // Broadcast Challenge
 func (s *server) broadcastReadHandler(msg maelstrom.Message) error {
-	body, err := readBody(msg)
-	if err != nil {
-		return err
-	}
-
-	body["type"] = "read_ok"
-	body["messages"] = s.bcast.vals
-	delete(body, "message")
-	return s.n.Reply(msg, body)
+	return s.n.Reply(msg, map[string]any{
+		"type":     "read_ok",
+		"messages": s.bcast.vals,
+	})
 }
 
 func (s *server) broadcastTopologyHandler(msg maelstrom.Message) error {
@@ -107,11 +98,7 @@ func (s *server) broadcastHandler(msg maelstrom.Message) error {
 	}
 	s.bcast.mu.Unlock()
 
-	body["type"] = "broadcast_ok"
-	delete(body, "message")
-	delete(body, "messages")
-
-	return s.n.Reply(msg, body)
+	return s.n.Reply(msg, map[string]any{"type": "broadcast_ok"})
 }
 
 func (s *server) broadcast(vals []any) {
