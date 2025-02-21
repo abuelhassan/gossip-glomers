@@ -35,5 +35,4 @@ I utilized the KV store. And used the CompareAndSwap function to assure the corr
 If the second step returned the error PreconditionFailed, that means the value was updated between the two steps,
 in which case I just retry starting from step 1.
 
-Note: I had to leave a sleep with a small duration (10ms) in the read handler before reading the KV store, 
-to make sure the final READ ops are all up-to-date.
+Note: I had to read a random number to the KV store, so that the last read is consistent as the challenge requires.

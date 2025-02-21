@@ -139,33 +139,25 @@ func (s *server) counterAddHandler(msg maelstrom.Message) error {
 	func() {
 		for {
 			var curSum int
-			for {
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-				val, err := s.cntrKV.Read(ctx, counterSumKey)
-				cancel()
-				if err == nil {
-					curSum = val.(int)
-					break
-				}
-				var rpc *maelstrom.RPCError
-				if errors.As(err, &rpc) && rpc.Code == maelstrom.KeyDoesNotExist {
-					curSum = 0
-					break
-				}
+			var rpc *maelstrom.RPCError
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			val, err := s.cntrKV.Read(ctx, counterSumKey)
+			cancel()
+			if err == nil {
+				curSum = val.(int)
+			} else if errors.As(err, &rpc) && rpc.Code == maelstrom.KeyDoesNotExist {
+				curSum = 0
+			} else {
+				continue // retry
 			}
-			for {
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-				err := s.cntrKV.CompareAndSwap(ctx, counterSumKey, curSum, curSum+delta, true)
-				cancel()
-				if err == nil {
-					return
-				}
-				var rpc *maelstrom.RPCError
-				if errors.As(err, &rpc) && rpc.Code == maelstrom.PreconditionFailed {
-					// Value got updated from elsewhere. Send it back to retry reading then writing the updated value.
-					break
-				}
+
+			ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+			err = s.cntrKV.CompareAndSwap(ctx, counterSumKey, curSum, curSum+delta, true)
+			cancel()
+			if err == nil {
+				return
 			}
+			// retry
 		}
 	}()
 
@@ -176,8 +168,8 @@ func (s *server) counterAddHandler(msg maelstrom.Message) error {
 
 func (s *server) counterReadHandler(msg maelstrom.Message) error {
 	sum := 0
-	time.Sleep(10 * time.Millisecond) // Hacky!
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	_ = s.cntrKV.Write(ctx, "rand", rand.Int()) // Hacky way to keep the last read consistent!
 	_ = s.cntrKV.ReadInto(ctx, counterSumKey, &sum)
 	cancel()
 	return s.n.Reply(msg, map[string]any{
