@@ -25,7 +25,7 @@ The broadcast handler expects two different types of messages. One with the key 
 another with key "messages" that nodes use to communicate together.
 
 # Grow-Only Counter
-The KV store provided by maelstrom, creates a separate node that works as a KV store.
+The KV store provided by maelstrom, creates separate node(s) that work as a KV store.
 
 I utilized the KV store. And used the CompareAndSwap function to assure the correctness of the sum.
  
@@ -36,3 +36,5 @@ If the second step returned the error PreconditionFailed, that means the value w
 in which case I just retry starting from step 1.
 
 Note: I had to read a random number to the KV store, so that the last read is consistent as the challenge requires.
+This can be avoided if using the Linearizable KV store! But the point of the challenge is to use sequentially consistent
+stores.
