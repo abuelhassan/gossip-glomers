@@ -20,6 +20,7 @@ const (
 	typeGenerate  = "generate"
 	typeBroadcast = "broadcast"
 	typeCounter   = "counter"
+	typeKafka     = "kafka"
 )
 
 const (
@@ -43,11 +44,7 @@ type server struct {
 
 // Echo Challenge
 func (s *server) echoHandler(msg maelstrom.Message) error {
-	body, err := readBody(msg)
-	if err != nil {
-		return err
-	}
-
+	body := readBody(msg)
 	body["type"] = "echo_ok"
 	return s.n.Reply(msg, body)
 }
@@ -74,10 +71,7 @@ func (s *server) broadcastTopologyHandler(msg maelstrom.Message) error {
 }
 
 func (s *server) broadcastHandler(msg maelstrom.Message) error {
-	body, err := readBody(msg)
-	if err != nil {
-		return err
-	}
+	body := readBody(msg)
 
 	var vals []any
 	if msgs, ok := body["messages"]; ok {
@@ -130,10 +124,7 @@ func (s *server) broadcast(vals []any) {
 
 // Grow-Only Counter Challenge
 func (s *server) counterAddHandler(msg maelstrom.Message) error {
-	body, err := readBody(msg)
-	if err != nil {
-		return err
-	}
+	body := readBody(msg)
 	delta := int(body["delta"].(float64))
 
 	func() {
@@ -178,6 +169,11 @@ func (s *server) counterReadHandler(msg maelstrom.Message) error {
 	})
 }
 
+// Kafka-Style Logs
+func (s *server) kafkaSendHandler(msg maelstrom.Message) error {
+	return nil
+}
+
 func main() {
 	const bcastBatchingLimit = 50
 	const bcastBatchingDuration = 450 * time.Millisecond
@@ -198,6 +194,8 @@ func main() {
 	case typeCounter:
 		n.Handle("add", srv.counterAddHandler)
 		n.Handle("read", srv.counterReadHandler)
+	case typeKafka:
+		n.Handle("send", srv.kafkaSendHandler)
 	}
 
 	if err := n.Run(); err != nil {
@@ -206,10 +204,10 @@ func main() {
 	}
 }
 
-func readBody(msg maelstrom.Message) (map[string]any, error) {
+func readBody(msg maelstrom.Message) map[string]any {
 	var body map[string]any
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
-		return nil, err
+		log.Panicf("Failed to unmarshal %s, err: %s", msg.Body, err.Error())
 	}
-	return body, nil
+	return body
 }

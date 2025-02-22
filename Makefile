@@ -42,3 +42,8 @@ run-counter:
 	go build -o $(EXECUTABLE_NAME) -ldflags "-X main.AppType=counter"
 	cd -P $(MAELSTROM_PATH); ./maelstrom test -w g-counter --bin $(PROJECT_PATH)/$(EXECUTABLE_NAME) --node-count 3 --rate 100 --time-limit 20 --nemesis partition
 	rm -f $(EXECUTABLE_NAME)
+
+run-kafka-a:
+	go build -o $(EXECUTABLE_NAME) -ldflags "-X main.AppType=kafka"
+	cd -P $(MAELSTROM_PATH); ./maelstrom test -w kafka --bin $(PROJECT_PATH)/$(EXECUTABLE_NAME) --node-count 1 --concurrency 2n --time-limit 20 --rate 1000
+	rm -f $(EXECUTABLE_NAME)

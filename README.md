@@ -38,3 +38,6 @@ in which case I just retry starting from step 1.
 Note: I had to read a random number to the KV store, so that the last read is consistent as the challenge requires.
 This can be avoided if using the Linearizable KV store! But the point of the challenge is to use sequentially consistent
 stores.
+
+# In progress
+- Kafka-Style logs
