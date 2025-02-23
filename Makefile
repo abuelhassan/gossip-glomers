@@ -1,4 +1,4 @@
-.PHONY: serve run-echo run-unique-id run-broadcast-a run-broadcast-b run-broadcast-c run-broadcast-d run-broadcast-e run-counter run-kafka-a run-kafka-b
+.PHONY: serve run-echo run-unique-id run-broadcast run-counter run-kafka
 
 EXECUTABLE_NAME = out
 PROJECT_PATH = $(GOPATH)/src/github.com/abuelhassan/gossip-glomers
