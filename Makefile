@@ -1,7 +1,10 @@
-.PHONY: run-echo run-unique-id run-broadcast-a run-broadcast-b run-broadcast-c run-broadcast-d run-broadcast-e run-counter
+.PHONY: serve run-echo run-unique-id run-broadcast-a run-broadcast-b run-broadcast-c run-broadcast-d run-broadcast-e run-counter run-kafka-a run-kafka-b
 
 EXECUTABLE_NAME = out
 PROJECT_PATH = $(GOPATH)/src/github.com/abuelhassan/gossip-glomers
+
+serve:
+	cd -P $(MAELSTROM_PATH); ./maelstrom serve
 
 run-echo:
 	go build -o $(EXECUTABLE_NAME) -ldflags "-X main.AppType=echo"
@@ -46,4 +49,9 @@ run-counter:
 run-kafka-a:
 	go build -o $(EXECUTABLE_NAME) -ldflags "-X main.AppType=kafka"
 	cd -P $(MAELSTROM_PATH); ./maelstrom test -w kafka --bin $(PROJECT_PATH)/$(EXECUTABLE_NAME) --node-count 1 --concurrency 2n --time-limit 20 --rate 1000
+	rm -f $(EXECUTABLE_NAME)
+
+run-kafka-b:
+	go build -o $(EXECUTABLE_NAME) -ldflags "-X main.AppType=kafka"
+	cd -P $(MAELSTROM_PATH); ./maelstrom test -w kafka --bin $(PROJECT_PATH)/$(EXECUTABLE_NAME) --node-count 2 --concurrency 2n --time-limit 20 --rate 1000
 	rm -f $(EXECUTABLE_NAME)
