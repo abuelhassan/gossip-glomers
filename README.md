@@ -39,5 +39,7 @@ Note: I had to read a random number to the KV store, so that the last read is co
 This can be avoided if using the Linearizable KV store! But the point of the challenge is to use sequentially consistent
 stores.
 
-# In progress
-- Kafka-Style logs
+# Kafka-Style Logs
+I have only implemented the multi node challenge. But I didn't try optimizations after.
+
+The third challenge suggests reducing the amount of CAS operations.

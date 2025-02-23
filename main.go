@@ -101,17 +101,13 @@ func (s *server) broadcastHandler(msg maelstrom.Message) error {
 }
 
 func (s *server) broadcast(vals []any) {
-	fn := func(dest string) {
-		for {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	fn := func(dest string) func(ctx context.Context) error {
+		return func(ctx context.Context) error {
 			_, err := s.n.SyncRPC(ctx, dest, map[string]any{
 				"type":     "broadcast",
 				"messages": vals,
 			})
-			cancel()
-			if err == nil {
-				return
-			}
+			return err
 		}
 	}
 
@@ -123,7 +119,7 @@ func (s *server) broadcast(vals []any) {
 		if dest == s.n.ID() {
 			continue
 		}
-		go fn(dest)
+		go retryWrapped(fn(dest))
 	}
 }
 
@@ -140,7 +136,9 @@ func (s *server) counterAddHandler(msg maelstrom.Message) error {
 }
 
 func (s *server) counterReadHandler(msg maelstrom.Message) error {
-	kvWrite(s.cntrKV, "rand", rand.Int())
+	retryWrapped(func(ctx context.Context) error {
+		return s.cntrKV.Write(ctx, "rand", rand.Int())
+	})
 	sum, _, _ := kvRead[int](s.cntrKV, counterSumKey)
 	return s.n.Reply(msg, map[string]any{
 		"type":  "read_ok",
@@ -164,7 +162,9 @@ func (s *server) kafkaSendHandler(msg maelstrom.Message) error {
 		},
 	)
 
-	kvWrite(s.kafkaKV, fmt.Sprintf("%s_%d", key, offset), val)
+	retryWrapped(func(ctx context.Context) error {
+		return s.kafkaKV.Write(ctx, fmt.Sprintf("%s_%d", key, offset), val)
+	})
 	return s.n.Reply(msg, map[string]any{
 		"type":   "send_ok",
 		"offset": offset,
@@ -200,17 +200,14 @@ func (s *server) kafkaCommitHandler(msg maelstrom.Message) error {
 
 	for key, val := range offsets {
 		offset := int(val.(float64))
-		for {
-			committed, _, _ := kvRead[int](s.kafkaKV, fmt.Sprintf("%s_%s", kafkaCommittedKey, key))
+		offsetKey := fmt.Sprintf("%s_%s", kafkaCommittedKey, key)
+		retryWrapped(func(ctx context.Context) error {
+			committed, _, _ := kvRead[int](s.kafkaKV, offsetKey)
 			if committed > offset {
-				break
+				return nil
 			}
-			err := kvCAS(s.kafkaKV, fmt.Sprintf("%s_%s", kafkaCommittedKey, key), committed, offset)
-			if err == nil {
-				break
-			}
-			// retry
-		}
+			return s.kafkaKV.CompareAndSwap(ctx, offsetKey, committed, offset, true)
+		})
 	}
 	return s.n.Reply(msg, map[string]any{
 		"type": "commit_offsets_ok",
@@ -277,44 +274,38 @@ func readBody(msg maelstrom.Message) map[string]any {
 	return body
 }
 
-// kvUpdate Reads a value, then updates using CompareAndSwap. It performs retries till success.
-func kvUpdate[VT any](kv *maelstrom.KV, key string, defaultValue func() VT, newValue func(VT) VT) {
+func retryWrapped(fn func(context.Context) error) {
 	for {
-		curValue, ok, err := kvRead[VT](kv, key)
-		if !ok {
-			curValue = defaultValue()
-		} else if err != nil {
-			continue
-		}
-
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		err = kv.CompareAndSwap(ctx, key, curValue, newValue(curValue), true)
+		err := fn(ctx)
 		cancel()
-		if err == nil {
-			return
+		if err != nil {
+			continue // retry
 		}
-		// retry
+		return
 	}
 }
 
-// kvWrite Writes a value to KV. It performs retries till success.
-func kvWrite(kv *maelstrom.KV, key string, val any) {
-	for {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		err := kv.Write(ctx, key, val)
-		cancel()
-		if err == nil {
-			return
+// kvUpdate Reads a value, then updates using CompareAndSwap. It performs retries till success.
+func kvUpdate[VT any](kv *maelstrom.KV, key string, defaultValue func() VT, newValue func(VT) VT) {
+	retryWrapped(func(ctx context.Context) error {
+		curValue, ok, err := kvRead[VT](kv, key)
+		if err != nil {
+			return err
 		}
-		// retry
-	}
+		if !ok {
+			curValue = defaultValue()
+		}
+		return kv.CompareAndSwap(ctx, key, curValue, newValue(curValue), true)
+	})
 }
 
 func kvRead[VT any](kv *maelstrom.KV, key string) (VT, bool, error) {
-	var val VT
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	var val VT
 	err := kv.ReadInto(ctx, key, &val)
-	cancel()
 	if err == nil {
 		return val, true, nil
 	}
@@ -323,10 +314,4 @@ func kvRead[VT any](kv *maelstrom.KV, key string) (VT, bool, error) {
 		return val, false, nil
 	}
 	return val, false, err
-}
-
-func kvCAS(kv *maelstrom.KV, key string, from any, to any) error {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	return kv.CompareAndSwap(ctx, key, from, to, true)
 }
