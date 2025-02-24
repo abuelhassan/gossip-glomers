@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"sync"
 	"time"
@@ -58,7 +58,7 @@ func (s *server) echoHandler(msg maelstrom.Message) error {
 func (s *server) generateHandler(msg maelstrom.Message) error {
 	return s.n.Reply(msg, map[string]any{
 		"type": "generate_ok",
-		"id":   int64(rand.Int31()) + time.Now().UTC().UnixMicro(),
+		"id":   uint64(rand.Int64() + time.Now().UTC().UnixNano()),
 	})
 }
 
@@ -279,10 +279,9 @@ func retryWrapped(fn func(context.Context) error) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		err := fn(ctx)
 		cancel()
-		if err != nil {
-			continue // retry
+		if err == nil {
+			return
 		}
-		return
 	}
 }
 
