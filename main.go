@@ -17,11 +17,12 @@ import (
 )
 
 const (
-	typeEcho      = "echo"
-	typeGenerate  = "generate"
-	typeBroadcast = "broadcast"
-	typeCounter   = "counter"
-	typeKafka     = "kafka"
+	typeEcho           = "echo"
+	typeGenerator      = "generator"
+	typeBroadcast      = "broadcast"
+	typeCounter        = "counter"
+	typeKafka          = "kafka"
+	typeTXNUncommitted = "txn-uncommitted"
 )
 
 const (
@@ -39,12 +40,18 @@ type broadcast struct {
 	mp   map[int]struct{}
 }
 
+type txnStore struct {
+	mu sync.Mutex
+	mp map[int]*int
+}
+
 type server struct {
 	n            *maelstrom.Node
 	bcast        broadcast
 	bcastBatcher batcher.Batcher[int]
 	cntrKV       *maelstrom.KV
 	kafkaKV      *maelstrom.KV
+	txnStore     txnStore
 }
 
 // Echo Challenge
@@ -59,7 +66,7 @@ func (s *server) echoHandler(m maelstrom.Message) error {
 func (s *server) generateHandler(m maelstrom.Message) error {
 	return s.n.Reply(m, map[string]any{
 		"type": "generate_ok",
-		"id":   uint64(rand.Int64() + time.Now().UTC().UnixNano()),
+		"id":   uint64(rand.Int64() + time.Now().UnixNano()),
 	})
 }
 
@@ -105,6 +112,8 @@ func (s *server) broadcastHandler(m maelstrom.Message) error {
 }
 
 func (s *server) broadcast(vals []int) {
+	const rootNode = "n0"
+
 	fn := func(dest string) func(ctx context.Context) error {
 		return func(ctx context.Context) error {
 			_, err := s.n.SyncRPC(ctx, dest, map[string]any{
@@ -115,8 +124,8 @@ func (s *server) broadcast(vals []int) {
 		}
 	}
 
-	children := []string{"n0"}
-	if s.n.ID() == "n0" {
+	children := []string{rootNode}
+	if s.n.ID() == rootNode {
 		children = s.n.NodeIDs()
 	}
 	for _, dest := range children {
@@ -242,6 +251,45 @@ func (s *server) kafkaListCommitsHandler(m maelstrom.Message) error {
 	})
 }
 
+// Transactions - Read Uncommitted - In Progress
+func (s *server) txnHandler(m maelstrom.Message) error {
+	var body struct {
+		Txn [][]any `json:"txn"`
+	}
+	readInto(m.Body, &body)
+
+	s.txnStore.mu.Lock()
+	for idx, op := range body.Txn {
+		switch op[0].(string) {
+		case "r":
+			body.Txn[idx][2] = s.txnStore.mp[int(op[1].(float64))]
+		case "w":
+			key, value := int(op[1].(float64)), int(op[2].(float64))
+			s.txnStore.mp[key] = &value
+		}
+	}
+	s.txnStore.mu.Unlock()
+
+	if m.Src[0] != 'n' { // Not coming from another node
+		go func() {
+			for _, dest := range s.n.NodeIDs() {
+				if dest == s.n.ID() {
+					continue
+				}
+				retryWrapped(func(ctx context.Context) error {
+					_, err := s.n.SyncRPC(ctx, dest, m.Body)
+					return err
+				})
+			}
+		}()
+	}
+
+	return s.n.Reply(m, map[string]any{
+		"type": "txn_ok",
+		"txn":  body.Txn,
+	})
+}
+
 func main() {
 	const bcastBatchingLimit = 50
 	const bcastBatchingDuration = 500 * time.Millisecond
@@ -252,7 +300,7 @@ func main() {
 	switch AppType {
 	case typeEcho:
 		n.Handle("echo", srv.echoHandler)
-	case typeGenerate:
+	case typeGenerator:
 		n.Handle("generate", srv.generateHandler)
 	case typeBroadcast:
 		srv.bcast = broadcast{vals: []int{}, mp: map[int]struct{}{}}
@@ -270,6 +318,9 @@ func main() {
 		n.Handle("poll", srv.kafkaPollHandler)
 		n.Handle("commit_offsets", srv.kafkaCommitHandler)
 		n.Handle("list_committed_offsets", srv.kafkaListCommitsHandler)
+	case typeTXNUncommitted:
+		srv.txnStore = txnStore{mp: map[int]*int{}}
+		n.Handle("txn", srv.txnHandler)
 	}
 
 	if err := n.Run(); err != nil {
