@@ -14,7 +14,7 @@ Just following steps...
 ```shell
 make run-generator
 ```
-Just using rand.Int64 + time.Now().UnixNano()
+Just using `rand.Int64 + time.Now().UnixNano()`.  
 It didn't pass until I used "math/rand/v2". Using "math/rand" was flaky and generated some duplicates.
 
 # Challenge 3 - Broadcast
@@ -22,9 +22,9 @@ It didn't pass until I used "math/rand/v2". Using "math/rand" was flaky and gene
 make run-broadcast
 ```
 ## Topology
- Seems that a flat tree topology was suitable for all the sub-challenges.
- I hardcoded the root as "n0". So all nodes other than "n0" would only broadcast to "n0".
- While "n0" would broadcast to all nodes.
+Seems that a flat tree topology was suitable for all the sub-challenges.  
+I hardcoded the root as "n0". So all nodes other than "n0" would only broadcast to "n0". 
+While "n0" would broadcast to all nodes.
 
 ## Batching
 Batching messages is used for the last challenge. Instead of broadcasting each message immediately. A batch of messages
@@ -57,7 +57,7 @@ Note: I had to write a random number to the KV store, so that the last read is c
 This can be avoided if using the Linearizable KV store! But the point of the challenge is to use sequentially consistent
 stores.
 
-# Kafka-Style Logs
+# Challenge 5 - Kafka-Style Logs
 ```shell
 make run-kafka
 ```

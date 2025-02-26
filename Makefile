@@ -8,7 +8,7 @@ generator := ./maelstrom test -w unique-ids --bin $(PROJECT_PATH)/$(EXECUTABLE_N
 broadcast := ./maelstrom test -w broadcast --bin $(PROJECT_PATH)/$(EXECUTABLE_NAME) --node-count 25 --time-limit 20 --rate 100 --latency 100
 counter := ./maelstrom test -w g-counter --bin $(PROJECT_PATH)/$(EXECUTABLE_NAME) --node-count 3 --rate 100 --time-limit 20 --nemesis partition
 kafka := ./maelstrom test -w kafka --bin $(PROJECT_PATH)/$(EXECUTABLE_NAME) --node-count 2 --concurrency 2n --time-limit 20 --rate 1000
-txn-uncommitted := ./maelstrom test -w txn-rw-register --bin $(PROJECT_PATH)/$(EXECUTABLE_NAME) --node-count 2 --concurrency 2n --time-limit 20 --rate 1000 --consistency-models read-uncommitted --availability total --nemesis partition
+txn := ./maelstrom test -w txn-rw-register --bin $(PROJECT_PATH)/$(EXECUTABLE_NAME) --node-count 2 --concurrency 2n --time-limit 20 --rate 1000 --consistency-models read-committed --availability total --nemesis partition
 
 run-%:
 	go build -o $(EXECUTABLE_NAME) -ldflags "-X main.AppType=$*"

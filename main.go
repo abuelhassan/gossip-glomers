@@ -12,17 +12,18 @@ import (
 	"time"
 
 	"github.com/abuelhassan/gossip-glomers/batcher"
+	"github.com/abuelhassan/gossip-glomers/retryer"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
 const (
-	typeEcho           = "echo"
-	typeGenerator      = "generator"
-	typeBroadcast      = "broadcast"
-	typeCounter        = "counter"
-	typeKafka          = "kafka"
-	typeTXNUncommitted = "txn-uncommitted"
+	typeEcho      = "echo"
+	typeGenerator = "generator"
+	typeBroadcast = "broadcast"
+	typeCounter   = "counter"
+	typeKafka     = "kafka"
+	typeTXN       = "txn"
 )
 
 const (
@@ -132,7 +133,7 @@ func (s *server) broadcast(vals []int) {
 		if dest == s.n.ID() {
 			continue
 		}
-		go retryWrapped(fn(dest))
+		go retryer.Retry(-1, 0, fn(dest))
 	}
 }
 
@@ -149,7 +150,7 @@ func (s *server) counterAddHandler(m maelstrom.Message) error {
 }
 
 func (s *server) counterReadHandler(m maelstrom.Message) error {
-	retryWrapped(func(ctx context.Context) error {
+	retryer.Retry(-1, 0, func(ctx context.Context) error {
 		return s.cntrKV.Write(ctx, "rand", rand.Int())
 	})
 	sum, _, _ := kvRead[int](s.cntrKV, counterSumKey)
@@ -178,7 +179,7 @@ func (s *server) kafkaSendHandler(m maelstrom.Message) error {
 		},
 	)
 
-	retryWrapped(func(ctx context.Context) error {
+	retryer.Retry(-1, 0, func(ctx context.Context) error {
 		return s.kafkaKV.Write(ctx, fmt.Sprintf("%s_%d", body.Key, offset), body.Msg)
 	})
 	return s.n.Reply(m, map[string]any{
@@ -220,7 +221,7 @@ func (s *server) kafkaCommitHandler(m maelstrom.Message) error {
 
 	for key, offset := range offsets {
 		offsetKey := fmt.Sprintf("%s_%s", kafkaCommittedKey, key)
-		retryWrapped(func(ctx context.Context) error {
+		retryer.Retry(-1, 0, func(ctx context.Context) error {
 			committed, _, _ := kvRead[int](s.kafkaKV, offsetKey)
 			if committed > offset {
 				return nil
@@ -251,7 +252,7 @@ func (s *server) kafkaListCommitsHandler(m maelstrom.Message) error {
 	})
 }
 
-// Transactions - Read Uncommitted - In Progress
+// Transactions - Read Committed
 func (s *server) txnHandler(m maelstrom.Message) error {
 	var body struct {
 		Txn [][]any `json:"txn"`
@@ -276,7 +277,7 @@ func (s *server) txnHandler(m maelstrom.Message) error {
 				if dest == s.n.ID() {
 					continue
 				}
-				retryWrapped(func(ctx context.Context) error {
+				retryer.Retry(-1, 0, func(ctx context.Context) error {
 					_, err := s.n.SyncRPC(ctx, dest, m.Body)
 					return err
 				})
@@ -318,7 +319,7 @@ func main() {
 		n.Handle("poll", srv.kafkaPollHandler)
 		n.Handle("commit_offsets", srv.kafkaCommitHandler)
 		n.Handle("list_committed_offsets", srv.kafkaListCommitsHandler)
-	case typeTXNUncommitted:
+	case typeTXN:
 		srv.txnStore = txnStore{mp: map[int]*int{}}
 		n.Handle("txn", srv.txnHandler)
 	}
@@ -335,20 +336,9 @@ func readInto(body json.RawMessage, val any) {
 	}
 }
 
-func retryWrapped(fn func(context.Context) error) {
-	for {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		err := fn(ctx)
-		cancel()
-		if err == nil {
-			return
-		}
-	}
-}
-
 // kvUpdate Reads a value, then updates using CompareAndSwap. It performs retries till success.
 func kvUpdate[VT any](kv *maelstrom.KV, key string, defaultValue func() VT, newValue func(VT) VT) {
-	retryWrapped(func(ctx context.Context) error {
+	retryer.Retry(-1, 0, func(ctx context.Context) error {
 		curValue, ok, err := kvRead[VT](kv, key)
 		if err != nil {
 			return err

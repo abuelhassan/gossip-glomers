@@ -6,8 +6,9 @@ import (
 	"time"
 )
 
+// Batcher batches messages
 type Batcher[T any] interface {
-	Add(item T)
+	Add(message T)
 }
 
 func New[T any](ctx context.Context, limit int, dur time.Duration, do func([]T)) Batcher[T] {
