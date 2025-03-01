@@ -13,17 +13,18 @@ import (
 
 	"github.com/abuelhassan/gossip-glomers/batcher"
 	"github.com/abuelhassan/gossip-glomers/retryer"
+	"github.com/abuelhassan/gossip-glomers/worker"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
 const (
-	typeEcho      = "echo"
-	typeGenerator = "generator"
-	typeBroadcast = "broadcast"
-	typeCounter   = "counter"
-	typeKafka     = "kafka"
-	typeTXN       = "txn"
+	appTypeEcho      = "echo"
+	appTypeGenerator = "generator"
+	appTypeBroadcast = "broadcast"
+	appTypeCounter   = "counter"
+	appTypeKafka     = "kafka"
+	appTypeTXN       = "txn"
 )
 
 const (
@@ -31,6 +32,12 @@ const (
 
 	kafkaOffsetsKey   = "__OFFSETS"
 	kafkaCommittedKey = "__COMMITTED"
+)
+
+const (
+	txnSyncLock = iota
+	txnSyncAbort
+	txnSyncCommit
 )
 
 var AppType string
@@ -42,8 +49,14 @@ type broadcast struct {
 }
 
 type txnStore struct {
-	mu sync.Mutex
-	mp map[int]*int
+	mu    sync.Mutex
+	mp    map[int]int
+	locks map[int]txnLock
+}
+
+type txnLock struct {
+	timestamp time.Time
+	txnID     int64
 }
 
 type server struct {
@@ -53,6 +66,7 @@ type server struct {
 	cntrKV       *maelstrom.KV
 	kafkaKV      *maelstrom.KV
 	txnStore     txnStore
+	txnWorker    worker.Worker
 }
 
 // Echo Challenge
@@ -259,36 +273,167 @@ func (s *server) txnHandler(m maelstrom.Message) error {
 	}
 	readInto(m.Body, &body)
 
-	s.txnStore.mu.Lock()
-	for idx, op := range body.Txn {
-		switch op[0].(string) {
-		case "r":
-			body.Txn[idx][2] = s.txnStore.mp[int(op[1].(float64))]
-		case "w":
-			key, value := int(op[1].(float64)), int(op[2].(float64))
-			s.txnStore.mp[key] = &value
+	writes := make(map[int]int)
+	for _, op := range body.Txn {
+		if op[0] == "r" {
+			continue
 		}
+		writes[int(op[1].(float64))] = int(op[2].(float64))
 	}
-	s.txnStore.mu.Unlock()
 
-	if m.Src[0] != 'n' { // Not coming from another node
-		go func() {
+	retryer.Retry(10, 13*time.Millisecond, func(ctx context.Context) error {
+		var returnErr error
+		s.txnWorker.Do(func() {
+			txnID := time.Now().UnixNano() + rand.Int64()
+
+			// Lock all nodes
+			var wg sync.WaitGroup
+			badDests := map[string]struct{}{}
+			var badMu sync.Mutex
 			for _, dest := range s.n.NodeIDs() {
-				if dest == s.n.ID() {
-					continue
-				}
-				retryer.Retry(-1, 0, func(ctx context.Context) error {
-					_, err := s.n.SyncRPC(ctx, dest, m.Body)
-					return err
-				})
+				wg.Add(1)
+				go func(dest string) {
+					defer wg.Done()
+					_, err := s.n.SyncRPC(ctx, dest, map[string]any{
+						"type":   "sync",
+						"cmd":    txnSyncLock,
+						"writes": writes,
+						"txn_id": txnID,
+					})
+					if err != nil {
+						badMu.Lock()
+						badDests[dest] = struct{}{}
+						badMu.Unlock()
+					}
+				}(dest)
 			}
-		}()
-	}
+			wg.Wait()
+
+			if len(badDests) >= (len(s.n.NodeIDs())+1)/2 {
+				for _, dest := range s.n.NodeIDs() {
+					go func(dest string) {
+						retryer.Retry(5, 13*time.Millisecond, func(ctx context.Context) error {
+							_, err := s.n.SyncRPC(ctx, dest, map[string]any{
+								"type":   "sync",
+								"cmd":    txnSyncAbort,
+								"writes": writes,
+								"txn_id": txnID,
+							})
+							return err
+						})
+					}(dest)
+				}
+				returnErr = fmt.Errorf("txn conflict")
+				return
+			}
+
+			// When majority is locked successfully, conflicting transactions would fail.
+			s.txnStore.mu.Lock()
+			curMp := map[int]int{}
+			for idx, op := range body.Txn {
+				if op[0] == "r" {
+					if val, ok := curMp[int(op[1].(float64))]; ok {
+						body.Txn[idx][2] = val
+					} else {
+						body.Txn[idx][2] = s.txnStore.mp[int(op[1].(float64))]
+					}
+				} else {
+					curMp[int(op[1].(float64))] = int(op[2].(float64))
+				}
+			}
+			s.txnStore.mu.Unlock()
+			for _, dest := range s.n.NodeIDs() {
+				go func(dest string) {
+					// Limiting the retries here may lead to inconsistencies between nodes, specially those that are unavailable for a while.
+					// It can be fixed by multiple reads on client side, to compare the reads and choose latest.
+					retryer.Retry(10, 13*time.Millisecond, func(ctx context.Context) error {
+						_, err := s.n.SyncRPC(ctx, dest, map[string]any{
+							"type":   "sync",
+							"cmd":    txnSyncCommit,
+							"writes": writes,
+							"txn_id": txnID,
+						})
+						return err
+					})
+				}(dest)
+			}
+		})
+		return returnErr
+	})
 
 	return s.n.Reply(m, map[string]any{
 		"type": "txn_ok",
 		"txn":  body.Txn,
 	})
+}
+
+func (s *server) txnSyncHandler(m maelstrom.Message) error {
+	var body struct {
+		Cmd    int         `json:"cmd"`
+		Writes map[int]int `json:"writes"`
+		TxnID  int64       `json:"txn_id"`
+	}
+	readInto(m.Body, &body)
+
+	switch body.Cmd {
+	case txnSyncLock:
+		ok := s.txnLock(body.TxnID, body.Writes)
+		if !ok {
+			return s.n.Reply(m, map[string]any{
+				"type": "error",
+				"code": maelstrom.TxnConflict,
+				"text": "txn abort",
+			})
+		}
+	case txnSyncAbort:
+		s.txnUnlock(body.TxnID, body.Writes)
+	case txnSyncCommit:
+		s.txnCommit(body.TxnID, body.Writes)
+	}
+	return s.n.Reply(m, map[string]any{
+		"type": "sync_ok",
+	})
+}
+
+func (s *server) txnLock(txnID int64, writes map[int]int) bool {
+	const txnLockDur = 100 * time.Millisecond
+
+	s.txnStore.mu.Lock()
+	defer s.txnStore.mu.Unlock()
+	for k := range writes {
+		lock, ok := s.txnStore.locks[k]
+		if ok && time.Since(lock.timestamp) < txnLockDur {
+			return false
+		}
+	}
+	for k := range writes {
+		s.txnStore.locks[k] = txnLock{
+			timestamp: time.Now(),
+			txnID:     txnID,
+		}
+	}
+	return true
+}
+
+func (s *server) txnUnlock(txnID int64, writes map[int]int) {
+	s.txnStore.mu.Lock()
+	defer s.txnStore.mu.Unlock()
+	for k := range writes {
+		if s.txnStore.locks[k].txnID == txnID {
+			delete(s.txnStore.locks, k)
+		}
+	}
+}
+
+func (s *server) txnCommit(txnID int64, writes map[int]int) {
+	s.txnStore.mu.Lock()
+	defer s.txnStore.mu.Unlock()
+	for k, v := range writes {
+		if s.txnStore.locks[k].txnID == txnID {
+			delete(s.txnStore.locks, k)
+		}
+		s.txnStore.mp[k] = v
+	}
 }
 
 func main() {
@@ -299,29 +444,31 @@ func main() {
 	srv := server{n: n}
 
 	switch AppType {
-	case typeEcho:
+	case appTypeEcho:
 		n.Handle("echo", srv.echoHandler)
-	case typeGenerator:
+	case appTypeGenerator:
 		n.Handle("generate", srv.generateHandler)
-	case typeBroadcast:
+	case appTypeBroadcast:
 		srv.bcast = broadcast{vals: []int{}, mp: map[int]struct{}{}}
 		srv.bcastBatcher = batcher.New[int](context.Background(), bcastBatchingLimit, bcastBatchingDuration, srv.broadcast)
 		n.Handle("broadcast", srv.broadcastHandler)
 		n.Handle("topology", srv.broadcastTopologyHandler)
 		n.Handle("read", srv.broadcastReadHandler)
-	case typeCounter:
+	case appTypeCounter:
 		srv.cntrKV = maelstrom.NewSeqKV(n)
 		n.Handle("add", srv.counterAddHandler)
 		n.Handle("read", srv.counterReadHandler)
-	case typeKafka:
+	case appTypeKafka:
 		srv.kafkaKV = maelstrom.NewLinKV(n)
 		n.Handle("send", srv.kafkaSendHandler)
 		n.Handle("poll", srv.kafkaPollHandler)
 		n.Handle("commit_offsets", srv.kafkaCommitHandler)
 		n.Handle("list_committed_offsets", srv.kafkaListCommitsHandler)
-	case typeTXN:
-		srv.txnStore = txnStore{mp: map[int]*int{}}
+	case appTypeTXN:
+		srv.txnStore = txnStore{mp: map[int]int{}, locks: map[int]txnLock{}}
+		srv.txnWorker = worker.New(30)
 		n.Handle("txn", srv.txnHandler)
+		n.Handle("sync", srv.txnSyncHandler)
 	}
 
 	if err := n.Run(); err != nil {

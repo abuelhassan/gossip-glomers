@@ -5,13 +5,14 @@ type Worker interface {
 }
 
 func New(n int) Worker {
-	ch := make(chan func())
+	ch := make(chan msg)
 	for i := 0; i < n; i++ {
 		go func() {
 			for {
 				select {
-				case fn := <-ch:
-					fn()
+				case m := <-ch:
+					m.fn()
+					m.done <- struct{}{}
 				}
 			}
 		}()
@@ -19,16 +20,18 @@ func New(n int) Worker {
 	return &worker{n: n, ch: ch}
 }
 
+type msg struct {
+	fn   func()
+	done chan struct{}
+}
+
 type worker struct {
 	n  int
-	ch chan func()
+	ch chan msg
 }
 
 func (w *worker) Do(fn func()) {
 	done := make(chan struct{}, 1)
-	go func() {
-		fn()
-		done <- struct{}{}
-	}()
-	w.ch <- fn
+	w.ch <- msg{fn, done}
+	<-done
 }
